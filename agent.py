@@ -100,11 +100,6 @@ def create_order_tool_factory(agent_instance):
             if not phone or phone == "unknown":
                 phone = agent_instance.caller_phone
         
-        # Use customer name from database if available and not provided
-        if agent_instance and agent_instance.customer_name:
-            if not name or name == "unknown":
-                name = agent_instance.customer_name
-
         try:
             if not phone or phone == "unknown":
                 final_phone = f"call_{int(time.time())}"
@@ -132,6 +127,14 @@ def create_order_tool_factory(agent_instance):
                     if result:
                         agent_instance.order_placed = True
                         log.info(f"✅ Order saved (MongoDB + Clover POS)")
+
+                        # Create / update customer record in Clover AFTER order placement.
+                        # This runs in the background and does not affect call latency.
+                        if name and final_phone:
+                            asyncio.create_task(
+                                create_customer_in_clover_async(final_phone, name)
+                            )
+                        
                         asyncio.create_task(agent_instance._terminate_call_after_delay())
                 except Exception as e:
                     log.error(f"Async order save failed: {e}")
@@ -147,6 +150,24 @@ def create_order_tool_factory(agent_instance):
             return "Sorry, there was an error saving your order. Please try again."
 
     return create_order
+
+
+async def create_customer_in_clover_async(phone: str, name: str):
+    """
+    Create or update customer in Clover AFTER the order is placed.
+    Runs in the background and does not block the live call.
+    """
+    try:
+        from clover import get_clover_client
+
+        clover_client = get_clover_client()
+        customer = await clover_client.get_or_create_customer(phone, name)
+        if customer:
+            log.info(f"✅ Customer created/updated in Clover after order: {name} ({phone})")
+        else:
+            log.warning("⚠️ Could not create/update customer in Clover after order")
+    except Exception as e:
+        log.warning(f"⚠️ Clover customer creation after order failed: {e}")
 
 
 # ------------------------------------------------------------
@@ -228,9 +249,11 @@ class RestaurantAgent(Agent):
             if os.getenv("ENABLE_TTS", "1") != "0":
                 # Personalized greeting if customer name is available
                 if self.customer_name:
+                    # RETURNING CUSTOMER - has name, can ask for order
                     greeting = f'Say the complete greeting in English: "Hello {self.customer_name}! Welcome back to Bawarchi Restaurant. I am emma. What would you like to order today?" Say all parts of the greeting - do not skip any words.'
                 else:
-                    greeting = 'Say the complete greeting in English: "Hello! Welcome to Bawarchi Restaurant. I am emma. What would you like to order today?" Say all parts of the greeting - do not skip any words.'
+                    # NEW CUSTOMER - NO name yet, DON'T ask for order, ask for name first
+                    greeting = 'Say the complete greeting in English: "Hello! Welcome to Bawarchi Restaurant. I am emma. Before we start, may I have your name please?" Say all parts of the greeting - do not skip any words.'
                 
                 session.generate_reply(instructions=greeting)
         except Exception as e:
@@ -417,18 +440,12 @@ async def entrypoint(ctx: JobContext):
 
     # 🚀 REALTIME MODEL: Ultra-low latency - STT + LLM + TTS all in one!
     # No separate Deepgram, no separate TTS, no separate LLM
-    # Everything happens in real-time with OpenAI's Realtime API
+    # Use OpenAI's default turn detection settings (more robust than our custom tuning)
+    # to avoid the agent getting "stuck" between user turns.
     realtime_model = realtime.RealtimeModel(
         api_key=openai_api_key,
         voice="alloy",  # Options: alloy, echo, shimmer, nova, fable, onyx
         modalities=["audio", "text"],
-        # Turn detection configuration (passed as dict)
-        turn_detection={
-            "type": "server_vad",  # Server-side voice activity detection
-            "threshold": 0.5,  # Sensitivity threshold
-            "prefix_padding_ms": 300,  # Audio before speech
-            "silence_duration_ms": 500,  # Silence to detect end of turn
-        },
     )
 
     # Create Agent with RealtimeModel (no separate STT/TTS/LLM needed)

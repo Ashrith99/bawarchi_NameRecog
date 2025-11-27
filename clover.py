@@ -59,9 +59,7 @@ class CloverClient:
     async def create_order(
         self,
         phone: str,
-        items: List[Dict[str, Any]],
-        name: str = None,
-        address: str = None
+        items: List[Dict[str, Any]]
     ) -> Optional[str]:
         """
         Create a complete order in Clover POS with items.
@@ -69,8 +67,6 @@ class CloverClient:
         Args:
             phone: Customer phone number
             items: List of items [{"name": str, "price": float, "quantity": int}]
-            name: Customer name (optional)
-            address: Customer address (optional)
         
         Returns:
             Clover order ID if successful, None if failed
@@ -79,9 +75,9 @@ class CloverClient:
             # 🔍 DEBUG: Entry point
             log.info(f"🔍 DEBUG: Clover create_order - phone={phone}, items={items}")
             
-            # Step 1: Create the order
+            # Step 1: Create the order (simplified - only phone needed)
             log.info(f"🔍 DEBUG: Creating base order...")
-            order_id = await self._create_order_base(phone, name)
+            order_id = await self._create_order_base(phone)
             if not order_id:
                 log.error("Failed to create base order in Clover")
                 return None
@@ -111,27 +107,23 @@ class CloverClient:
     
     async def _create_order_base(
         self,
-        phone: str,
-        name: str = None
+        phone: str
     ) -> Optional[str]:
         """
-        Create base order in Clover.
+        Create base order in Clover (optimized - only phone number).
         
         Args:
             phone: Customer phone number
-            name: Customer name
         
         Returns:
             Order ID if successful, None otherwise
         """
         url = f"{self.base_url}/v3/merchants/{self.merchant_id}/orders"
         
-        # Build order title
-        title = f"Phone Order"
-        if name:
-            title += f" - {name}"
+        # Simple order title - just "Phone Order"
+        title = "Phone Order"
         
-        # Build order note with phone number
+        # Phone number in note
         note = f"Phone: {phone}"
         
         payload = {

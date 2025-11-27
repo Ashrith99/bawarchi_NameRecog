@@ -142,18 +142,23 @@ class DatabaseDriver:
     async def create_order_with_clover(self, phone: str, items: List[Dict[str, Any]], name: str = None, address: str = None, caller_phone: str = None) -> Optional[dict]:
         """
         Create order in MongoDB and sync to Clover POS.
-        Also creates customer in Clover if name is provided and customer doesn't exist.
-        
+
         This is an async wrapper that:
-        1. Creates/updates customer in Clover (if name provided)
-        2. Saves order to MongoDB (your database)
-        3. Sends order to Clover POS (restaurant system)
+        1. Saves order to MongoDB (your database)
+        2. Sends order to Clover POS (restaurant system)
+
+        NOTE:
+        - The `name` field is only stored in MongoDB for your own records.
+        - Clover POS orders are created with **phone + items only**; the
+          customer name is NOT sent as part of the Clover order payload.
+        - Customer creation/updates in Clover (for greetings, etc.) are
+          handled separately at the agent level after the order is placed.
         
         Args:
             phone: Customer phone number
             items: List of order items
-            name: Customer name (optional - will create customer in Clover if provided)
-            address: Delivery address (optional)
+            name: Customer name (optional – stored only in MongoDB)
+            address: Delivery address (optional – stored only in MongoDB)
             caller_phone: Extracted caller phone (optional)
         
         Returns:
@@ -161,19 +166,6 @@ class DatabaseDriver:
         """
         # 🔍 DEBUG: Entry point
         self.log.info(f"🔍 DEBUG: create_order_with_clover called - phone={phone}, name={name}, items_count={len(items)}")
-        
-        # Step 0: Create or update customer in Clover if name is provided
-        if CLOVER_ENABLED and name:
-            try:
-                self.log.info(f"🔍 DEBUG: Creating/updating customer in Clover...")
-                clover_client = get_clover_client()
-                customer = await clover_client.get_or_create_customer(phone, name)
-                if customer:
-                    self.log.info(f"✅ Customer in Clover: {customer.get('firstName', '')} {customer.get('lastName', '')}")
-                else:
-                    self.log.warning(f"⚠️ Could not create/get customer in Clover")
-            except Exception as e:
-                self.log.warning(f"⚠️ Error managing customer in Clover: {e}")
         
         # Step 1: Save to MongoDB (always do this)
         order = self.create_order(phone, items, name, address, caller_phone)
@@ -200,9 +192,7 @@ class DatabaseDriver:
                 self.log.info(f"🔍 DEBUG: Calling clover_client.create_order...")
                 clover_order_id = await clover_client.create_order(
                     phone=phone,
-                    items=items,
-                    name=name,
-                    address=address
+                    items=items
                 )
                 
                 self.log.info(f"🔍 DEBUG: Clover API returned: {clover_order_id}")
