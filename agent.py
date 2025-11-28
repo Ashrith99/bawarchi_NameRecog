@@ -106,6 +106,10 @@ def create_order_tool_factory(agent_instance):
             else:
                 final_phone = phone
 
+            # Remember provided name for the rest of the call / future calls.
+            if agent_instance and name:
+                agent_instance.customer_name = name.strip()
+
             # Make database call non-blocking - don't wait for it
             async def save_order_async():
                 try:
@@ -249,11 +253,9 @@ class RestaurantAgent(Agent):
             if os.getenv("ENABLE_TTS", "1") != "0":
                 # Personalized greeting if customer name is available
                 if self.customer_name:
-                    # RETURNING CUSTOMER - has name, can ask for order
                     greeting = f'Say the complete greeting in English: "Hello {self.customer_name}! Welcome back to Bawarchi Restaurant. I am emma. What would you like to order today?" Say all parts of the greeting - do not skip any words.'
                 else:
-                    # NEW CUSTOMER - NO name yet, DON'T ask for order, ask for name first
-                    greeting = 'Say the complete greeting in English: "Hello! Welcome to Bawarchi Restaurant. I am emma. Before we start, may I have your name please?" Say all parts of the greeting - do not skip any words.'
+                    greeting = 'Say the complete greeting in English: "Hello! Welcome to Bawarchi Restaurant. I am emma. What would you like to order today?" Say all parts of the greeting - do not skip any words.'
                 
                 session.generate_reply(instructions=greeting)
         except Exception as e:
@@ -467,39 +469,19 @@ async def entrypoint(ctx: JobContext):
     async def extract_phone_number():
         caller_phone = None
         try:
-            # Try immediately first
-            room = ctx.room
-            if room:
-                for pid, participant in room.remote_participants.items():
-                    if pid.startswith("sip_"):
-                        phone = pid.replace("sip_", "")
-                        if phone.startswith("+"):
-                            caller_phone = phone
-                            break
-                    if hasattr(participant, "attributes") and participant.attributes:
-                        sip_phone = participant.attributes.get("sip.phoneNumber")
-                        if sip_phone:
-                            caller_phone = sip_phone
-                            break
-                    if hasattr(participant, "metadata") and participant.metadata:
-                        phone_metadata = participant.metadata.get("phoneNumber") or participant.metadata.get("from")
-                        if phone_metadata:
-                            caller_phone = phone_metadata
-                            break
-            
-            # If not found, wait briefly and try again (but don't block session start)
-            if not caller_phone:
-                await asyncio.sleep(0.3)
+            # Try multiple times in case the SIP participant metadata is not ready immediately
+            for attempt in range(8):  # ~4 seconds total
                 room = ctx.room
                 if room:
                     for pid, participant in room.remote_participants.items():
+                        # SIP participant id usually starts with "sip_+<number>"
                         if pid.startswith("sip_"):
                             phone = pid.replace("sip_", "")
                             if phone.startswith("+"):
                                 caller_phone = phone
                                 break
                         if hasattr(participant, "attributes") and participant.attributes:
-                            sip_phone = participant.attributes.get("sip.phoneNumber")
+                            sip_phone = participant.attributes.get("sip.phoneNumber") or participant.attributes.get("from")
                             if sip_phone:
                                 caller_phone = sip_phone
                                 break
@@ -508,12 +490,16 @@ async def entrypoint(ctx: JobContext):
                             if phone_metadata:
                                 caller_phone = phone_metadata
                                 break
-        except Exception:
-            pass
+                if caller_phone:
+                    break
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            log.warning(f"Error extracting phone number: {e}")
         
         # Store phone number in agent
         if caller_phone:
             agent.caller_phone = caller_phone
+            log.info(f"✅ Extracted caller phone: {caller_phone}")
             
             # Fetch customer name from database/Clover
             try:
@@ -526,6 +512,7 @@ async def entrypoint(ctx: JobContext):
                 log.warning(f"Error fetching customer name: {e}")
         else:
             agent.caller_phone = "extracted_failed"
+            log.warning("⚠️ Failed to extract caller phone number.")
 
     # Start session immediately without blocking
     await session.start(
