@@ -87,6 +87,19 @@ class CreateOrderArgs(BaseModel):
 
 
 
+def store_customer_name_tool_factory(agent_instance):
+    """Factory function to create a store_customer_name tool to store name immediately when customer says it"""
+    @function_tool()
+    async def store_customer_name(name: str):
+        """Store the customer's name in memory immediately when they say it. Use this right after the customer tells you their name, before spelling it back for confirmation."""
+        if agent_instance and name:
+            agent_instance.customer_name = name.strip()
+            log.info(f"✅ Stored customer name in memory: {name.strip()}")
+            return f"Name '{name.strip()}' stored successfully. You can now use this name when placing the order."
+        return "Name storage failed."
+    
+    return store_customer_name
+
 def create_order_tool_factory(agent_instance):
     """Factory function to create a create_order tool bound to a specific agent instance"""
     @function_tool()
@@ -106,6 +119,11 @@ def create_order_tool_factory(agent_instance):
             else:
                 final_phone = phone
 
+            # Use stored name if available, otherwise use provided name
+            if agent_instance and agent_instance.customer_name and not name:
+                name = agent_instance.customer_name
+                log.info(f"✅ Using stored customer name: {name}")
+            
             # Remember provided name for the rest of the call / future calls.
             if agent_instance and name:
                 agent_instance.customer_name = name.strip()
@@ -188,10 +206,11 @@ class RestaurantAgent(Agent):
             RestaurantAgent._cached_instructions = _get_combined_instructions()
         
         create_order_tool = create_order_tool_factory(self)
+        store_name_tool = store_customer_name_tool_factory(self)
 
         super().__init__(
             instructions=RestaurantAgent._cached_instructions,
-            tools=[create_order_tool],
+            tools=[create_order_tool, store_name_tool],
         )
 
         self.current_session = None
@@ -212,6 +231,12 @@ class RestaurantAgent(Agent):
             if not phone or phone in ["unknown", "extracted_failed"]:
                 phone = f"call_{int(time.time())}"
             args["phone"] = phone
+            
+            # If name is not provided but we have stored name, use it
+            if not args.get("name") and self.customer_name:
+                args["name"] = self.customer_name
+                log.info(f"✅ Using stored customer name in create_order: {self.customer_name}")
+            
             tool_call.function.arguments = json.dumps(args)
         return await super()._execute_tool(tool_call, session)
 
